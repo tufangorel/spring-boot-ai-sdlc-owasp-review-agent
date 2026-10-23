@@ -2,6 +2,8 @@
 
 A Spring AI service that reviews a repository snapshot for [OWASP Top 10:2025](https://owasp.org/Top10/2025/) risks. Send source files as JSON, or send a zip archive, and it returns structured findings: a summary, a verdict, and the file, line, OWASP id, severity, and fix for each issue.
 
+The API works with either **OpenAI** or **Anthropic (Claude)** models. You choose the provider with configuration and need no code changes: set `AI_PROVIDER` to `openai` (the default) or `anthropic`, give the matching API key in `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, and optionally pick a model with `OPENAI_MODEL` or `ANTHROPIC_MODEL`. Each running instance uses one provider. To compare the two, run one instance for each.
+
 The model sees only the files you send. It does not clone a Git remote, run Maven or Gradle, or query a CVE database. A03:2025 (Software Supply Chain Failures) is reported only when a build file shows a concrete issue, such as a dependency taken from an unexpected repository host. Confirming known vulnerabilities in dependencies needs a separate dependency scanner.
 
 ## OWASP Top 10:2025
@@ -80,6 +82,52 @@ java -jar target\spring-boot-ai-sdlc-owasp-review-agent-0.0.1-SNAPSHOT.jar
 Swagger UI is at `http://localhost:8080/swagger-ui.html`. Health is at `/actuator/health`.
 
 Source sent to this service is forwarded to the configured model provider. Do not expose the API on an untrusted network without authentication in front of it.
+
+## Sequence diagram
+
+The flow of a single `POST /api/owasp-reviews` request, from the controller to the LLM and back. The chat model is OpenAI or Anthropic, depending on `AI_PROVIDER`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant Controller as OwaspReviewController
+    participant Submission as RepositorySubmission
+    participant Paths as RepositoryPaths
+    participant Agent as OwaspReviewAgent
+    participant ChatClient as Spring AI ChatClient
+    participant Model as ChatModel<br/>(OpenAI or Anthropic)
+    participant LLM as LLM provider API
+    participant Verdicts as ReviewVerdicts
+
+    Client->>Controller: POST /api/owasp-reviews (JSON)
+    Note over Controller: @Valid checks the body<br/>400 Bad Request if files is empty
+    Controller->>Submission: prepare(request)
+    loop each file
+        Submission->>Paths: normalize(path)
+        Paths-->>Submission: relative path or 400
+        Note over Submission: reject duplicate, empty,<br/>or oversized files with 400
+    end
+    Submission-->>Controller: prepared request
+    Controller->>Agent: review(request)
+    Agent->>Agent: split files into batches (owasp.review.batch-characters)
+    loop each batch i of n
+        Agent->>Agent: render files with numbered lines
+        Agent->>ChatClient: prompt(system prompt + repository, context, batch i of n, files)
+        ChatClient->>Model: call(Prompt) with JSON format instructions
+        Model->>LLM: HTTPS chat completion request
+        LLM-->>Model: JSON reply
+        Model-->>ChatClient: ChatResponse
+        ChatClient-->>Agent: OwaspReviewResult (entity)
+        Agent->>Agent: ground findings: drop unknown files, lines, and OWASP ids,<br/>trim text, remove duplicates
+    end
+    Agent->>Verdicts: decide(summary, findings)
+    Verdicts-->>Agent: result with verdict<br/>REQUEST_CHANGES, COMMENT, or APPROVE
+    Agent-->>Controller: OwaspReviewResult
+    Controller-->>Client: 200 OK (summary, verdict, findings)
+```
+
+`POST /api/owasp-reviews/archive` follows the same flow. The only difference is that before `prepare`, `RepositoryArchiveReader` extracts the reviewable files from the zip. If the model call fails, the error goes back to the caller and no partial result is returned.
 
 ## API
 
