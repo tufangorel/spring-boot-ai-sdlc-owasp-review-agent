@@ -4,6 +4,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
@@ -11,6 +13,7 @@ import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -98,6 +101,22 @@ class OwaspReviewControllerTests {
 	}
 
 	@Test
+	void prefersTheRequestedRepositoryName() throws Exception {
+		assertThat(archiveRepositoryName("billing.zip", " payments ")).isEqualTo("payments");
+	}
+
+	@ParameterizedTest
+	@CsvSource({
+			"'', archive",
+			".zip, archive",
+			"BILLING.ZIP, BILLING",
+			"snapshot.tar, snapshot.tar",
+			"uploads/orders.zip, orders" })
+	void derivesTheRepositoryNameFromTheArchiveFileName(String filename, String expected) throws Exception {
+		assertThat(archiveRepositoryName(filename, null)).isEqualTo(expected);
+	}
+
+	@Test
 	void rejectsAnEmptyArchive() throws Exception {
 		MockMultipartFile archive = new MockMultipartFile("archive", "billing.zip", "application/zip", new byte[0]);
 
@@ -105,6 +124,25 @@ class OwaspReviewControllerTests {
 				.andExpect(status().isBadRequest());
 
 		verifyNoInteractions(agent, submission, archiveReader);
+	}
+
+	private String archiveRepositoryName(String filename, String repositoryName) throws Exception {
+		List<RepositoryFile> files = List.of(new RepositoryFile("src/OrderController.java", "class OrderController {}"));
+		given(archiveReader.read(any())).willReturn(files);
+		given(submission.prepare(any())).willAnswer(invocation -> invocation.getArgument(0));
+		given(agent.review(any())).willReturn(RESULT);
+		MockMultipartFile archive = new MockMultipartFile("archive", filename, "application/zip",
+				"zip".getBytes(StandardCharsets.UTF_8));
+		MockMultipartHttpServletRequestBuilder request = multipart("/api/owasp-reviews/archive").file(archive);
+		if (repositoryName != null) {
+			request.param("repositoryName", repositoryName);
+		}
+
+		mockMvc.perform(request).andExpect(status().isOk());
+
+		ArgumentCaptor<OwaspReviewRequest> captor = ArgumentCaptor.forClass(OwaspReviewRequest.class);
+		verify(submission).prepare(captor.capture());
+		return captor.getValue().repositoryName();
 	}
 
 }

@@ -53,6 +53,58 @@ class RepositorySubmissionTests {
 				.hasMessageContaining("more than 1 files");
 	}
 
+	@Test
+	void rejectsAMissingRepositoryName() {
+		List<RepositoryFile> files = List.of(new RepositoryFile("A.java", "class A {}"));
+
+		assertThatThrownBy(() -> submission.prepare(new OwaspReviewRequest(null, null, files)))
+				.isInstanceOf(ResponseStatusException.class)
+				.hasMessageContaining("Repository name is required");
+		assertThatThrownBy(() -> submission.prepare(new OwaspReviewRequest("  ", null, files)))
+				.isInstanceOf(ResponseStatusException.class)
+				.hasMessageContaining("Repository name is required");
+	}
+
+	@Test
+	void rejectsMissingFiles() {
+		assertThatThrownBy(() -> submission.prepare(new OwaspReviewRequest("billing", null, null)))
+				.isInstanceOf(ResponseStatusException.class)
+				.hasMessageContaining("At least one file is required");
+		assertThatThrownBy(() -> submission.prepare(new OwaspReviewRequest("billing", null, List.of())))
+				.isInstanceOf(ResponseStatusException.class)
+				.hasMessageContaining("At least one file is required");
+	}
+
+	@Test
+	void rejectsEmptyFiles() {
+		assertThatThrownBy(() -> submission.prepare(new OwaspReviewRequest("billing", null,
+				List.of(new RepositoryFile("A.java", null)))))
+				.isInstanceOf(ResponseStatusException.class)
+				.hasMessageContaining("File is empty: A.java");
+		assertThatThrownBy(() -> submission.prepare(new OwaspReviewRequest("billing", null,
+				List.of(new RepositoryFile("A.java", "  ")))))
+				.isInstanceOf(ResponseStatusException.class)
+				.hasMessageContaining("File is empty: A.java");
+	}
+
+	@Test
+	void rejectsAFileOrRepositoryOverTheSizeLimits() {
+		OwaspReviewProperties properties = new OwaspReviewProperties();
+		properties.setMaxFileCharacters(12);
+		properties.setMaxTotalCharacters(15);
+		RepositorySubmission limited = new RepositorySubmission(properties);
+
+		assertThatThrownBy(() -> limited.prepare(new OwaspReviewRequest("billing", null,
+				List.of(new RepositoryFile("A.java", "class A { int x; }")))))
+				.isInstanceOf(ResponseStatusException.class)
+				.hasMessageContaining("File exceeds the maximum review size: A.java");
+		assertThatThrownBy(() -> limited.prepare(new OwaspReviewRequest("billing", null, List.of(
+				new RepositoryFile("A.java", "class A {}"),
+				new RepositoryFile("B.java", "class B {}")))))
+				.isInstanceOf(ResponseStatusException.class)
+				.hasMessageContaining("Repository exceeds the maximum review size");
+	}
+
 	private static OwaspReviewRequest request(String path) {
 		return new OwaspReviewRequest("billing", null, List.of(new RepositoryFile(path, "class A {}")));
 	}

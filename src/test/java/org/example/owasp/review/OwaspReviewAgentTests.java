@@ -128,6 +128,109 @@ class OwaspReviewAgentTests {
 	}
 
 	@Test
+	void dropsMalformedFindingsAndTrimsTheOnesItKeeps() {
+		OwaspReviewAgent strict = new OwaspReviewAgent(ChatClient.builder(new StubChatModel("""
+				{"summary": "Mixed", "verdict": "REQUEST_CHANGES", "findings": [
+				  null,
+				  {"line": 1, "owaspId": "A05:2025", "severity": "MAJOR", "message": "No file", "suggestion": "Fix"},
+				  {"file": "src/OrderController.java", "line": 1, "owaspId": "A05:2025",
+				   "message": "No severity", "suggestion": "Fix"},
+				  {"file": "src/OrderController.java", "line": 1, "owaspId": "A05:2025", "severity": " ",
+				   "message": "Blank severity", "suggestion": "Fix"},
+				  {"file": "src/OrderController.java", "line": 1, "owaspId": "A05:2025", "severity": "MAJOR",
+				   "suggestion": "Fix"},
+				  {"file": "src/OrderController.java", "line": 1, "owaspId": "A05:2025", "severity": "MAJOR",
+				   "message": " ", "suggestion": "Fix"},
+				  {"file": "src/OrderController.java", "line": 1, "owaspId": "A05:2025", "severity": "MAJOR",
+				   "message": "No suggestion"},
+				  {"file": "src/OrderController.java", "line": 1, "owaspId": "A05:2025", "severity": "MAJOR",
+				   "message": "Blank suggestion", "suggestion": " "},
+				  {"file": "src/OrderController.java", "line": 1, "severity": "MAJOR",
+				   "message": "No OWASP id", "suggestion": "Fix"},
+				  {"file": "src/OrderController.java", "line": 1, "owaspId": "A11:2025", "severity": "MAJOR",
+				   "message": "Unknown OWASP id", "suggestion": "Fix"},
+				  {"file": "src/OrderController.java", "line": 0, "owaspId": "A05:2025", "severity": "MAJOR",
+				   "message": "Line zero", "suggestion": "Fix"},
+				  {"file": "src/OrderController.java", "owaspId": "Injection A05:2025", "severity": "minor",
+				   "message": "  Kept without a line  ", "suggestion": "  Bind the value  "}
+				]}
+				""")), new OwaspReviewProperties());
+
+		OwaspReviewResult result = strict.review(request("class OrderController {\n}"));
+
+		assertThat(result.verdict()).isEqualTo(OwaspReviewResult.Verdict.COMMENT);
+		assertThat(result.summary()).isEqualTo("Mixed");
+		assertThat(result.findings()).containsExactly(new OwaspReviewResult.Finding("src/OrderController.java", null,
+				"A05:2025", OwaspReviewResult.Severity.MINOR, "Kept without a line", "Bind the value"));
+	}
+
+	@Test
+	void dropsDuplicateFindingsButKeepsNearMatches() {
+		OwaspReviewAgent deduplicating = new OwaspReviewAgent(ChatClient.builder(new StubChatModel("""
+				{"summary": "Duplicates", "findings": [
+				  {"file": "A.java", "line": 1, "owaspId": "A05:2025", "severity": "MAJOR", "message": "Concatenated query", "suggestion": "Bind"},
+				  {"file": "A.java", "line": 1, "owaspId": "A05:2025", "severity": "MAJOR", "message": "Concatenated query", "suggestion": "Bind"},
+				  {"file": "A.java", "line": 2, "owaspId": "A05:2025", "severity": "MAJOR", "message": "Concatenated query", "suggestion": "Bind"},
+				  {"file": "A.java", "line": 1, "owaspId": "A01:2025", "severity": "MAJOR", "message": "Concatenated query", "suggestion": "Bind"},
+				  {"file": "A.java", "line": 1, "owaspId": "A05:2025", "severity": "MAJOR", "message": "Another issue", "suggestion": "Bind"},
+				  {"file": "B.java", "line": 1, "owaspId": "A05:2025", "severity": "MAJOR", "message": "Concatenated query", "suggestion": "Bind"}
+				]}
+				""")), new OwaspReviewProperties());
+
+		OwaspReviewResult result = deduplicating.review(new OwaspReviewRequest("billing", null, List.of(
+				new RepositoryFile("A.java", "class A {\n String sql = q + name; }"),
+				new RepositoryFile("B.java", "class B { String sql = q + name; }"))));
+
+		assertThat(result.findings()).hasSize(5);
+		assertThat(result.findings()).extracting(OwaspReviewResult.Finding::file)
+				.containsExactly("A.java", "A.java", "A.java", "A.java", "B.java");
+	}
+
+	@Test
+	void usesADefaultSummaryWhenTheModelGivesNone() {
+		OwaspReviewProperties properties = new OwaspReviewProperties();
+		properties.setBatchCharacters(40);
+		StubChatModel model = new StubChatModel(List.of("""
+				{"verdict": "COMMENT", "findings": [
+				  {"file": "A.java", "line": 1, "owaspId": "A02:2025", "severity": "INFO",
+				   "message": "Broad CORS", "suggestion": "List the allowed origins"}]}
+				""", """
+				{"summary": "  ", "verdict": "APPROVE"}
+				"""));
+		OwaspReviewAgent agentWithoutSummary = new OwaspReviewAgent(ChatClient.builder(model), properties);
+
+		OwaspReviewResult result = agentWithoutSummary.review(new OwaspReviewRequest("billing", null, List.of(
+				new RepositoryFile("A.java", "class A { String origins = \"*\"; }"),
+				new RepositoryFile("B.java", "class B { void run() {} }"))));
+
+		assertThat(model.prompts()).hasSize(2);
+		assertThat(result.summary()).isEqualTo("Review completed.");
+		assertThat(result.verdict()).isEqualTo(OwaspReviewResult.Verdict.COMMENT);
+		assertThat(result.findings()).singleElement().extracting(OwaspReviewResult.Finding::owaspId)
+				.isEqualTo("A02:2025");
+	}
+
+	@Test
+	void approvesWhenTheModelReturnsNull() {
+		OwaspReviewAgent empty = new OwaspReviewAgent(ChatClient.builder(new StubChatModel("null")),
+				new OwaspReviewProperties());
+
+		OwaspReviewResult result = empty.review(request("class OrderController {}"));
+
+		assertThat(result.verdict()).isEqualTo(OwaspReviewResult.Verdict.APPROVE);
+		assertThat(result.findings()).isEmpty();
+	}
+
+	@Test
+	void doesNotCallTheModelWithoutFiles() {
+		OwaspReviewResult result = agent.review(new OwaspReviewRequest("billing", null, List.of()));
+
+		assertThat(chatModel.prompts()).isEmpty();
+		assertThat(result.verdict()).isEqualTo(OwaspReviewResult.Verdict.APPROVE);
+		assertThat(result.findings()).isEmpty();
+	}
+
+	@Test
 	void propagatesModelFailure() {
 		IllegalStateException failure = new IllegalStateException("provider unavailable");
 		OwaspReviewAgent failing = new OwaspReviewAgent(ChatClient.builder(StubChatModel.failingWith(failure)),
