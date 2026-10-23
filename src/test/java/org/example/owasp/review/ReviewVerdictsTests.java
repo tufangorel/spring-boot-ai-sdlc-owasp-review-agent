@@ -26,6 +26,27 @@ class ReviewVerdictsTests {
 	}
 
 	@Test
+	void usesADefaultSummaryWhenNoneIsGiven() {
+		assertThat(ReviewVerdicts.decide(null, List.of(finding(OwaspReviewResult.Severity.MINOR))).summary())
+				.isEqualTo("Review completed.");
+		assertThat(ReviewVerdicts.decide("  ", List.of(finding(OwaspReviewResult.Severity.MINOR))).summary())
+				.isEqualTo("Review completed.");
+		assertThat(ReviewVerdicts.decide("  Notes  ", List.of(finding(OwaspReviewResult.Severity.MINOR))).summary())
+				.isEqualTo("Notes");
+	}
+
+	@Test
+	void readsVerdictAndSeverityCaseInsensitivelyAndTreatsBlankAsMissing() {
+		assertThat(OwaspReviewResult.Verdict.fromJson(" request_changes "))
+				.isEqualTo(OwaspReviewResult.Verdict.REQUEST_CHANGES);
+		assertThat(OwaspReviewResult.Verdict.fromJson(null)).isNull();
+		assertThat(OwaspReviewResult.Verdict.fromJson(" ")).isNull();
+		assertThat(OwaspReviewResult.Severity.fromJson(" major ")).isEqualTo(OwaspReviewResult.Severity.MAJOR);
+		assertThat(OwaspReviewResult.Severity.fromJson(null)).isNull();
+		assertThat(OwaspReviewResult.Severity.fromJson(" ")).isNull();
+	}
+
+	@Test
 	void approvesWhenNothingIsGrounded() {
 		OwaspReviewResult result = ReviewVerdicts.decide("The model claimed an issue", List.of());
 
